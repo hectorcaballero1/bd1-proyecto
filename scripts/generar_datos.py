@@ -1,10 +1,30 @@
 import psycopg2
 from faker import Faker
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 
 fake = Faker('es_ES')
-CANTIDAD_USUARIOS = 1000  # Cambia según necesites: 1k, 10k, 100k, 1M
+
+# ============================================================
+# CONFIGURACIÓN HÍBRIDA (OPTIMIZADA PARA ÍNDICES)
+# ============================================================
+CANTIDAD_USUARIOS = 1000  # Cambiar según: 1000, 10000, 100000, 1000000
+
+# VALORES FIJOS (rapidez sin sacrificar funcionalidad)
+SEGUIMIENTOS_POR_USUARIO = 9        # Cada usuario sigue a 9 personas
+PUBLICACIONES_POR_USUARIO = 5       # Cada usuario hace 5 publicaciones
+MULTIMEDIA_POR_PUBLICACION = 2      # Cada publicación tiene 2 multimedia
+COMENTARIOS_POR_USUARIO = 6         # Cada usuario hace 6 comentarios
+
+# VALORES ALEATORIOS (necesarios para variabilidad en índices)
+RANGO_LIKES = (10, 40)              # Entre 10-40 likes por usuario
+RANGO_RESPUESTAS = (0, 5)           # Entre 0-5 respuestas por usuario
+
+# Constantes
+PORCENTAJE_IMAGENES = 0.85          # 85% imágenes, 15% videos
+PESOS_ESTADO_USUARIO = [90, 8, 2]   # 90% activo, 8% desactivado, 2% eliminado
+
+# ============================================================
 
 # Conexión
 conn = psycopg2.connect(
@@ -17,6 +37,17 @@ conn = psycopg2.connect(
 cur = conn.cursor()
 
 print("✓ Conexión exitosa")
+print("\n" + "="*60)
+print("CONFIGURACIÓN")
+print("="*60)
+print(f"Usuarios: {CANTIDAD_USUARIOS:,}")
+print(f"Seguimientos por usuario: {SEGUIMIENTOS_POR_USUARIO} (fijo)")
+print(f"Publicaciones por usuario: {PUBLICACIONES_POR_USUARIO} (fijo)")
+print(f"Multimedia por publicación: {MULTIMEDIA_POR_PUBLICACION} (fijo)")
+print(f"Likes por usuario: {RANGO_LIKES[0]}-{RANGO_LIKES[1]} (aleatorio)")
+print(f"Comentarios por usuario: {COMENTARIOS_POR_USUARIO} (fijo)")
+print(f"Respuestas por usuario: {RANGO_RESPUESTAS[0]}-{RANGO_RESPUESTAS[1]} (aleatorio)")
+print("="*60 + "\n")
 
 # ==================== 1. USUARIOS ====================
 print(f"Generando {CANTIDAD_USUARIOS} usuarios...")
@@ -27,9 +58,9 @@ for i in range(CANTIDAD_USUARIOS):
     email = f"user{i}@redsocial.com"
     emails.append(email)
     username = f"usuario_{i}"
-    biografia = fake.text(max_nb_chars=150) if random.random() > 0.3 else None
-    foto = f"foto_{i}.jpg" if random.random() > 0.7 else None
-    estado = random.choices(['A', 'D', 'E'], weights=[90, 8, 2])[0]
+    biografia = fake.text(max_nb_chars=150) if random.random() > 0.4 else None
+    foto = f"perfil_{i}.jpg" if random.random() > 0.3 else None
+    estado = random.choices(['A', 'D', 'E'], weights=PESOS_ESTADO_USUARIO)[0]
     
     usuarios.append((email, username, biografia, foto, estado))
 
@@ -41,193 +72,262 @@ conn.commit()
 print(f"✓ {CANTIDAD_USUARIOS} usuarios insertados")
 
 # ==================== 2. SEGUIMIENTOS ====================
-cant_seguimientos = int(CANTIDAD_USUARIOS * 2.5)
-print(f"Generando {cant_seguimientos} seguimientos...")
+print(f"Generando seguimientos ({SEGUIMIENTOS_POR_USUARIO} por usuario)...")
 seguimientos = set()
 
-while len(seguimientos) < cant_seguimientos:
-    seguidor = random.choice(emails)
-    seguido = random.choice(emails)
-    if seguidor != seguido:
-        seguimientos.add((seguidor, seguido))
+for email in emails:
+    seguidos = 0
+    intentos = 0
+    max_intentos = SEGUIMIENTOS_POR_USUARIO * 3
     
-    if len(seguimientos) % 10000 == 0:
-        print(f"  Progreso: {len(seguimientos)}/{cant_seguimientos}")
+    while seguidos < SEGUIMIENTOS_POR_USUARIO and intentos < max_intentos:
+        intentos += 1
+        seguido = random.choice(emails)
+        if seguido != email and (email, seguido) not in seguimientos:
+            seguimientos.add((email, seguido))
+            seguidos += 1
+
+print(f"  Total: {len(seguimientos)} seguimientos")
 
 cur.executemany("""
     INSERT INTO Seguimiento (email_seguidor, email_seguido)
     VALUES (%s, %s)
 """, list(seguimientos))
 conn.commit()
-print(f"✓ {cant_seguimientos} seguimientos insertados")
+print(f"✓ {len(seguimientos)} seguimientos insertados")
 
-# ==================== 3. PUBLICACIONES CON MULTIMEDIA (CON TRANSACCIONES) ====================
-cant_publicaciones = CANTIDAD_USUARIOS * 3
-print(f"Generando {cant_publicaciones} publicaciones con multimedia...")
+# ==================== 3. PUBLICACIONES CON MULTIMEDIA ====================
+print(f"Generando publicaciones ({PUBLICACIONES_POR_USUARIO} por usuario)...")
 
 publicaciones_exitosas = 0
 publicaciones_fallidas = 0
+publicaciones_info = []
 
-for i in range(cant_publicaciones):
-    try:
-        # ← INICIO DE TRANSACCIÓN
-        cur.execute("BEGIN")
-        
-        # 1. Insertar publicación
-        texto = fake.text(max_nb_chars=400) if random.random() > 0.05 else None
-        fecha = fake.date_time_between(start_date='-2y', end_date='now')
-        autor = random.choice(emails)
-        
-        cur.execute("""
-            INSERT INTO Publicacion (texto_descriptivo, fecha_de_creacion, email_autor)
-            VALUES (%s, %s, %s) RETURNING id_publicacion
-        """, (texto, fecha, autor))
-        id_pub = cur.fetchone()[0]
-        
-        # 2. Insertar imagen o video aleatoriamente
-        if random.random() < 0.8:  # 80% imágenes
+for idx, email in enumerate(emails):
+    for _ in range(PUBLICACIONES_POR_USUARIO):
+        try:
+            cur.execute("BEGIN")
+            
+            # 1. Insertar publicación
+            texto = fake.text(max_nb_chars=400) if random.random() > 0.1 else None
+            fecha = fake.date_time_between(start_date='-2y', end_date='now')
+            
             cur.execute("""
-                INSERT INTO Imagen (ubicacion_almacenamiento)
-                VALUES (%s) RETURNING id_multimedia
-            """, (f"imagenes/img_{id_pub}.jpg",))
-        else:  # 20% videos
-            cur.execute("""
-                INSERT INTO Video (ubicacion_almacenamiento)
-                VALUES (%s) RETURNING id_multimedia
-            """, (f"videos/vid_{id_pub}.mp4",))
-        
-        id_multimedia = cur.fetchone()[0]
-        
-        # 3. Vincular publicación con multimedia
-        cur.execute("""
-            INSERT INTO Publicacion_Contenido (id_multimedia, id_publicacion)
-            VALUES (%s, %s)
-        """, (id_multimedia, id_pub))
-        
-        # ← COMMIT (aquí se valida el trigger)
-        cur.execute("COMMIT")
-        publicaciones_exitosas += 1
-        
-    except Exception as e:
-        cur.execute("ROLLBACK")
-        publicaciones_fallidas += 1
-        if publicaciones_fallidas < 5:  # Solo mostrar primeros 5 errores
-            print(f"  Error en publicación {i}: {e}")
+                INSERT INTO Publicacion (texto_descriptivo, fecha_de_creacion, email_autor)
+                VALUES (%s, %s, %s) RETURNING id_publicacion
+            """, (texto, fecha, email))
+            id_pub = cur.fetchone()[0]
+            
+            # 2. Insertar multimedia (URLs SIMPLES)
+            for idx_media in range(MULTIMEDIA_POR_PUBLICACION):
+                if random.random() < PORCENTAJE_IMAGENES:
+                    if idx_media == 0:
+                        url = f"img_{id_pub}.jpg"
+                    else:
+                        url = f"img_{id_pub}_{idx_media}.jpg"
+                    
+                    cur.execute("""
+                        INSERT INTO Imagen (ubicacion_almacenamiento, fecha_subida)
+                        VALUES (%s, %s) RETURNING id_multimedia
+                    """, (url, fecha))
+                else:
+                    if idx_media == 0:
+                        url = f"vid_{id_pub}.mp4"
+                    else:
+                        url = f"vid_{id_pub}_{idx_media}.mp4"
+                    
+                    cur.execute("""
+                        INSERT INTO Video (ubicacion_almacenamiento, fecha_subida)
+                        VALUES (%s, %s) RETURNING id_multimedia
+                    """, (url, fecha))
+                
+                id_multimedia = cur.fetchone()[0]
+                
+                # 3. Vincular multimedia con publicación
+                cur.execute("""
+                    INSERT INTO Publicacion_Contenido (id_multimedia, id_publicacion)
+                    VALUES (%s, %s)
+                """, (id_multimedia, id_pub))
+            
+            cur.execute("COMMIT")
+            publicaciones_exitosas += 1
+            
+            publicaciones_info.append({
+                'id': id_pub,
+                'fecha': fecha,
+                'autor': email
+            })
+            
+        except Exception as e:
+            cur.execute("ROLLBACK")
+            publicaciones_fallidas += 1
+            if publicaciones_fallidas < 5:
+                print(f"  Error en publicación: {e}")
     
-    if (i + 1) % 5000 == 0:
-        print(f"  Progreso: {i + 1}/{cant_publicaciones} (exitosas: {publicaciones_exitosas}, fallidas: {publicaciones_fallidas})")
+    # Progreso cada 100 usuarios
+    if (idx + 1) % 100 == 0:
+        print(f"  Progreso: {idx + 1}/{CANTIDAD_USUARIOS} usuarios procesados")
 
-print(f"✓ {publicaciones_exitosas} publicaciones con multimedia insertadas")
+print(f"✓ {publicaciones_exitosas} publicaciones insertadas")
 if publicaciones_fallidas > 0:
     print(f"⚠ {publicaciones_fallidas} publicaciones fallaron")
 
-# ==================== 4. ME GUSTAS ====================
-print("Generando me gustas...")
-cur.execute("SELECT id_publicacion FROM Publicacion")
-ids_pubs = [row[0] for row in cur.fetchall()]
+# ==================== 4. ME GUSTAS (ALEATORIO) ====================
+print(f"Generando me gustas ({RANGO_LIKES[0]}-{RANGO_LIKES[1]} por usuario)...")
 
-cant_likes = CANTIDAD_USUARIOS * 10
-likes = set()
-
-while len(likes) < cant_likes:
-    email = random.choice(emails)
-    id_pub = random.choice(ids_pubs)
-    likes.add((email, id_pub))
+if publicaciones_info:
+    ids_pubs = [p['id'] for p in publicaciones_info]
+    likes = set()
     
-    if len(likes) % 50000 == 0:
-        print(f"  Progreso: {len(likes)}/{cant_likes}")
-
-cur.executemany("""
-    INSERT INTO Publicacion_MeGusta (email_usuario, id_publicacion)
-    VALUES (%s, %s)
-""", list(likes))
-conn.commit()
-print(f"✓ {cant_likes} me gustas insertados")
+    for idx, email in enumerate(emails):
+        cant_likes = random.randint(RANGO_LIKES[0], RANGO_LIKES[1])
+        likes_dados = 0
+        
+        cant_likes = min(cant_likes, len(ids_pubs))
+        
+        intentos = 0
+        max_intentos = cant_likes * 2
+        
+        while likes_dados < cant_likes and intentos < max_intentos:
+            intentos += 1
+            id_pub = random.choice(ids_pubs)
+            if (email, id_pub) not in likes:
+                likes.add((email, id_pub))
+                likes_dados += 1
+        
+        if (idx + 1) % 100 == 0:
+            print(f"  Progreso: {idx + 1}/{CANTIDAD_USUARIOS} usuarios procesados")
+    
+    print(f"  Total: {len(likes)} me gustas")
+    
+    cur.executemany("""
+        INSERT INTO Publicacion_MeGusta (email_usuario, id_publicacion)
+        VALUES (%s, %s)
+    """, list(likes))
+    conn.commit()
+    print(f"✓ {len(likes)} me gustas insertados")
+else:
+    print("⚠ No hay publicaciones, saltando me gustas")
 
 # ==================== 5. COMENTARIOS ====================
-cant_comentarios = CANTIDAD_USUARIOS * 5
-print(f"Generando {cant_comentarios} comentarios...")
+print(f"Generando comentarios ({COMENTARIOS_POR_USUARIO} por usuario)...")
 
-for i in range(cant_comentarios):
-    texto = fake.text(max_nb_chars=200)
-    fecha = fake.date_time_between(start_date='-1y', end_date='now')
-    id_pub = random.choice(ids_pubs)
-    autor = random.choice(emails)
+if publicaciones_info:
+    comentarios_por_publicacion = {}
+    total_comentarios = 0
     
-    cur.execute("""
-        INSERT INTO Comentario (texto, fecha_de_creacion, id_publicacion, email_autor)
-        VALUES (%s, %s, %s, %s)
-    """, (texto, fecha, id_pub, autor))
-    
-    if (i + 1) % 10000 == 0:
-        conn.commit()
-        print(f"  Progreso: {i + 1}/{cant_comentarios}")
-
-conn.commit()
-print(f"✓ {cant_comentarios} comentarios insertados")
-
-# ==================== 6. RESPUESTAS A COMENTARIOS ====================
-print("Generando respuestas a comentarios...")
-cur.execute("SELECT id_comentario FROM Comentario")
-ids_comentarios = [row[0] for row in cur.fetchall()]
-
-cant_respuestas = int(CANTIDAD_USUARIOS * 0.5)
-respuestas_insertadas = 0
-
-for _ in range(cant_respuestas):
-    try:
-        id_hijo = random.choice(ids_comentarios)
-        id_padre = random.choice(ids_comentarios)
-        
-        if id_hijo != id_padre:
+    for idx, email in enumerate(emails):
+        for _ in range(COMENTARIOS_POR_USUARIO):
+            pub_info = random.choice(publicaciones_info)
+            id_pub = pub_info['id']
+            fecha_pub = pub_info['fecha']
+            
+            # Comentario DESPUÉS de la publicación
+            if fecha_pub < datetime.now():
+                dias_desde_pub = (datetime.now() - fecha_pub).days
+                if dias_desde_pub > 0:
+                    dias_aleatorios = random.randint(0, min(dias_desde_pub, 365))
+                    fecha_comentario = fecha_pub + timedelta(days=dias_aleatorios)
+                else:
+                    fecha_comentario = fecha_pub
+            else:
+                fecha_comentario = fecha_pub
+            
+            texto = fake.text(max_nb_chars=200)
+            
             cur.execute("""
-                INSERT INTO Comentario_Responde (id_hijo, id_padre)
-                VALUES (%s, %s)
-            """, (id_hijo, id_padre))
-            respuestas_insertadas += 1
-    except:
-        pass  # Ignorar duplicados o violaciones
-
-conn.commit()
-print(f"✓ {respuestas_insertadas} respuestas insertadas")
-
-# ==================== 7. MENSAJES ====================
-cant_mensajes = CANTIDAD_USUARIOS * 4
-print(f"Generando {cant_mensajes} mensajes...")
-
-for i in range(cant_mensajes):
-    texto = fake.text(max_nb_chars=150) if random.random() > 0.05 else None
-    fecha = fake.date_time_between(start_date='-6M', end_date='now')
-    estado = random.choices(['E', 'R', 'L'], weights=[5, 15, 80])[0]
+                INSERT INTO Comentario (texto, fecha_de_creacion, id_publicacion, email_autor)
+                VALUES (%s, %s, %s, %s) RETURNING id_comentario
+            """, (texto, fecha_comentario, id_pub, email))
+            
+            id_comentario = cur.fetchone()[0]
+            total_comentarios += 1
+            
+            if id_pub not in comentarios_por_publicacion:
+                comentarios_por_publicacion[id_pub] = []
+            comentarios_por_publicacion[id_pub].append(id_comentario)
+        
+        if (idx + 1) % 100 == 0:
+            conn.commit()
+            print(f"  Progreso: {idx + 1}/{CANTIDAD_USUARIOS} usuarios procesados")
     
-    while True:
-        remitente = random.choice(emails)
-        destinatario = random.choice(emails)
-        if remitente != destinatario:
-            break
+    conn.commit()
+    print(f"✓ {total_comentarios} comentarios insertados")
+else:
+    print("⚠ No hay publicaciones, saltando comentarios")
+    comentarios_por_publicacion = {}
+
+# ==================== 6. RESPUESTAS A COMENTARIOS (ALEATORIO) ====================
+print(f"Generando respuestas ({RANGO_RESPUESTAS[0]}-{RANGO_RESPUESTAS[1]} por usuario)...")
+
+if comentarios_por_publicacion:
+    publicaciones_con_multiples = [
+        pub_id for pub_id, comentarios in comentarios_por_publicacion.items()
+        if len(comentarios) >= 2
+    ]
     
-    cur.execute("""
-        INSERT INTO Mensaje (texto, fecha_de_envio, estado, email_remitente, email_destinatario)
-        VALUES (%s, %s, %s, %s, %s)
-    """, (texto, fecha, estado, remitente, destinatario))
-    
-    if (i + 1) % 10000 == 0:
+    if publicaciones_con_multiples:
+        respuestas = []
+        
+        for idx, email in enumerate(emails):
+            cant_respuestas = random.randint(RANGO_RESPUESTAS[0], RANGO_RESPUESTAS[1])
+            respuestas_hechas = 0
+            
+            intentos = 0
+            max_intentos = cant_respuestas * 3 if cant_respuestas > 0 else 0
+            
+            while respuestas_hechas < cant_respuestas and intentos < max_intentos:
+                intentos += 1
+                
+                try:
+                    id_pub = random.choice(publicaciones_con_multiples)
+                    comentarios = comentarios_por_publicacion[id_pub]
+                    
+                    if len(comentarios) >= 2:
+                        id_hijo = random.choice(comentarios)
+                        id_padre = random.choice([c for c in comentarios if c != id_hijo])
+                        
+                        respuestas.append((id_hijo, id_padre))
+                        respuestas_hechas += 1
+                except:
+                    pass
+            
+            if (idx + 1) % 100 == 0:
+                print(f"  Progreso: {idx + 1}/{CANTIDAD_USUARIOS} usuarios procesados")
+        
+        print(f"  Total intentos: {len(respuestas)} respuestas")
+        
+        cur.executemany("""
+            INSERT INTO Comentario_Responde (id_hijo, id_padre)
+            VALUES (%s, %s)
+            ON CONFLICT (id_hijo) DO NOTHING
+        """, respuestas)
         conn.commit()
-        print(f"  Progreso: {i + 1}/{cant_mensajes}")
-
-conn.commit()
-print(f"✓ {cant_mensajes} mensajes insertados")
+        
+        cur.execute("SELECT COUNT(*) FROM Comentario_Responde")
+        total_respuestas = cur.fetchone()[0]
+        print(f"✓ {total_respuestas} respuestas insertadas")
+    else:
+        print("⚠ No hay publicaciones con múltiples comentarios")
+else:
+    print("⚠ No hay comentarios")
 
 # ==================== FINALIZAR ====================
 cur.close()
 conn.close()
 
-print("\n" + "="*50)
+print("\n" + "="*60)
 print("✅ GENERACIÓN COMPLETA")
-print("="*50)
-print(f"Total usuarios: {CANTIDAD_USUARIOS}")
-print(f"Total publicaciones: {publicaciones_exitosas}")
-print(f"Total seguimientos: {cant_seguimientos}")
-print(f"Total me gustas: {cant_likes}")
-print(f"Total comentarios: {cant_comentarios}")
-print(f"Total mensajes: {cant_mensajes}")
+print("="*60)
+print(f"Total usuarios:      {CANTIDAD_USUARIOS:,}")
+print(f"Total seguimientos:  {len(seguimientos):,} (~{len(seguimientos)//CANTIDAD_USUARIOS} por usuario)")
+print(f"Total publicaciones: {publicaciones_exitosas:,} (~{publicaciones_exitosas//CANTIDAD_USUARIOS} por usuario)")
+
+if publicaciones_info:
+    print(f"Total me gustas:     {len(likes):,} (~{len(likes)//CANTIDAD_USUARIOS} por usuario)")
+    print(f"Total comentarios:   {total_comentarios:,} (~{total_comentarios//CANTIDAD_USUARIOS} por usuario)")
+    if 'total_respuestas' in locals():
+        print(f"Total respuestas:    {total_respuestas:,}")
+
+print(f"\n⚠ Nota: Tabla Mensaje vacía (no utilizada en las consultas de experimentación)")
+print("="*60)
