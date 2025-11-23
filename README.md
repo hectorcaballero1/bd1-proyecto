@@ -40,20 +40,11 @@ Nota: El proceso es idéntico para todos los volúmenes, solo cambia CANTIDAD_US
 
 1. Limpiar y levantar base de datos
 
-Windows:
-
 ```sh
 docker-compose down -v
 docker-compose up -d
 ```
 
-Linux/Mac:
-
-
-```sh
-docker-compose down -v
-docker-compose up -d
-```
 2. Verificar el entorno virtual de Python
 
 Windows:
